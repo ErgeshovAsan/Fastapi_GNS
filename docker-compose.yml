@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  auth_service:
+    env_file:
+        - .env
+    build:
+      context: ./auth_service
+    ports:
+      - "8001:8000"
+    networks:
+      - appnet
+
+  esf_service:
+    env_file:
+      - .env
+    build:
+      context: ./esf_service
+    ports:
+      - "8002:8000"
+    networks:
+      - appnet
+    depends_on:
+      - auth_service
+
+networks:
+  appnet:
+    driver: bridge
