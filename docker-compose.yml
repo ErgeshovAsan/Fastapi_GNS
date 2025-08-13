@@ -3,9 +3,11 @@ version: "3.9"
 services:
   auth_service:
     env_file:
-        - .env
+      - .env
     build:
       context: ./auth_service
+    volumes:
+      - ./data/auth_db:/app/auth_db
     ports:
       - "8001:8000"
     networks:

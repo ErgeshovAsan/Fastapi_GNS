@@ -6,6 +6,8 @@ from pydantic import BaseModel
 from passlib.hash import bcrypt
 from dotenv import load_dotenv
 import os
+import logging
+logging.basicConfig(level=logging.DEBUG)
 
 app = FastAPI(title="Auth Service")
 
@@ -48,7 +50,7 @@ async def login(user: UserIn):
 
 register_tortoise(
     app,
-    db_url="sqlite://auth_db.sqlite3",
+    db_url="sqlite:///./auth_db/auth_db.sqlite3",
     modules={"models": ["main"]},
     generate_schemas=True,
     add_exception_handlers=True,

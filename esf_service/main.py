@@ -7,6 +7,9 @@ from typing import List, Optional
 import httpx
 from dotenv import load_dotenv
 import os
+import logging
+import json
+from tortoise.exceptions import IntegrityError
 
 app = FastAPI(title="ESF Service")
 
@@ -15,6 +18,7 @@ load_dotenv()
 Delete_Document = os.getenv("Delete_Document")
 Update_Document = os.getenv("Update_Document")
 List_Document = os.getenv("List_Document")
+List_Document_UUid = os.getenv("List_Document_UUid")
 Greate_Document = os.getenv("Greate_Document")
 
 X_Road_Client = os.getenv("X_Road_Client")
@@ -91,18 +95,21 @@ class InvoiceOut(BaseModel):
 class Invoice(Model):
     id = fields.IntField(pk=True)
     documentUuid = fields.CharField(max_length=100, unique=True, null=True)
-    isBranchDataSent = fields.BooleanField()
-    ownedCrmReceiptCode = fields.CharField(max_length=100)
-    contractorTin = fields.CharField(max_length=14)
-    paymentCode = fields.CharField(max_length=10)
-    taxRateVATCode = fields.CharField(max_length=10)
-    isResident = fields.BooleanField()
-    deliveryDate = fields.CharField(max_length=20)
-    currencyCode = fields.CharField(max_length=10)
-    deliveryTypeCode = fields.CharField(max_length=10)
-    deliveryCode = fields.CharField(max_length=10)
-    operationTypeCode = fields.CharField(max_length=10)
-    createdAt = fields.DatetimeField(auto_now_add=True)
+    isBranchDataSent = fields.BooleanField(default=False)
+    ownedCrmReceiptCode = fields.CharField(max_length=100, default="")
+    contractorTin = fields.CharField(max_length=14, default="")
+    paymentCode = fields.CharField(max_length=10, default="")
+    taxRateVATCode = fields.CharField(max_length=10, default="")
+    isResident = fields.BooleanField(default=False)
+    deliveryDate = fields.CharField(max_length=20, default="")
+    currencyCode = fields.CharField(max_length=10, default="")
+    deliveryTypeCode = fields.CharField(max_length=10, default="")
+    deliveryCode = fields.CharField(max_length=10, default="")
+    operationTypeCode = fields.CharField(max_length=10, default="")
+    createdDate = fields.CharField(max_length=30, default="")
+    totalAmount = fields.FloatField(null=True)
+    statusCode = fields.CharField(max_length=10, default="")
+
 
     entries: fields.ReverseRelation["CatalogEntry"]
 
@@ -137,36 +144,8 @@ async def send_invoice(invoice: InvoiceIn):
             if not document_uuid:
                 raise HTTPException(status_code=500, detail="GNS did not return documentUuid")
 
-            inv = await Invoice.create(
-                documentUuid=document_uuid,
-                isBranchDataSent=invoice.isBranchDataSent,
-                ownedCrmReceiptCode=invoice.ownedCrmReceiptCode,
-                contractorTin=invoice.contractorTin,
-                paymentCode=invoice.paymentCode,
-                taxRateVATCode=invoice.taxRateVATCode,
-                isResident=invoice.isResident,
-                deliveryDate=invoice.deliveryDate,
-                currencyCode=invoice.currencyCode,
-                deliveryTypeCode=invoice.deliveryTypeCode,
-                deliveryCode=invoice.deliveryCode,
-                operationTypeCode=invoice.operationTypeCode
-            )
-
-            for entry in invoice.catalogEntries:
-                await CatalogEntry.create(
-                    invoice=inv,
-                    catalogCode=entry.catalogCode,
-                    name=entry.name,
-                    unitCode=entry.unitCode,
-                    unitClassificationCode=entry.unitClassificationCode,
-                    quantity=entry.quantity,
-                    price=entry.price,
-                    taxRateVATCode=entry.taxRateVATCode,
-                    salesTaxCode=entry.salesTaxCode
-                )
-
             return {
-                "msg": "Invoice created in GNS and saved locally",
+                "msg": "Invoice created in GNS",
                 "documentUuid": document_uuid,
                 "gns_response": gns_response
             }
@@ -177,18 +156,157 @@ async def send_invoice(invoice: InvoiceIn):
         except httpx.RequestError as e:
             raise HTTPException(status_code=500, detail=f"GNS request failed: {str(e)}")
 
+async def save_invoice_with_entries(invoice_json: dict):
+    isResident_str = invoice_json.get("isResident", "false")
+    isResident = isResident_str.lower() == "true" if isinstance(isResident_str, str) else bool(isResident_str)
+
+    documentUuid = invoice_json.get("documentUuid")
+    deliveryCode = invoice_json.get("deliveryCode") or "UNKNOWN"
+
+    try:
+        inv = await Invoice.create(
+            documentUuid=documentUuid,
+            isBranchDataSent=invoice_json.get("isBranchDataSent", False),
+            ownedCrmReceiptCode=invoice_json.get("ownedCrmReceiptCode", ""),
+            contractorTin=invoice_json.get("contractor", {}).get("pin", ""),
+            paymentCode=invoice_json.get("paymentType", {}).get("code", ""),
+            taxRateVATCode=invoice_json.get("vatTaxType", {}).get("code", ""),
+            isResident=isResident,
+            deliveryDate=invoice_json.get("deliveryDate", ""),
+            currencyCode=invoice_json.get("currency", {}).get("code", ""),
+            deliveryTypeCode=invoice_json.get("deliveryType", {}).get("code", ""),
+            deliveryCode=deliveryCode,
+            operationTypeCode=invoice_json.get("receiptType", {}).get("code", ""),
+            createdDate=invoice_json.get("createdDate", ""),
+            totalAmount=invoice_json.get("totalAmount", 0.0),
+            statusCode=invoice_json.get("statusCode", ""),
+        )
+    except IntegrityError:
+        inv = await Invoice.get(documentUuid=documentUuid)
+        inv.isBranchDataSent = invoice_json.get("isBranchDataSent", False)
+        inv.ownedCrmReceiptCode = invoice_json.get("ownedCrmReceiptCode", "")
+        inv.contractorTin = invoice_json.get("contractor", {}).get("pin", "")
+        inv.paymentCode = invoice_json.get("paymentType", {}).get("code", "")
+        inv.taxRateVATCode = invoice_json.get("vatTaxType", {}).get("code", "")
+        inv.isResident = isResident
+        inv.deliveryDate = invoice_json.get("deliveryDate", "")
+        inv.currencyCode = invoice_json.get("currency", {}).get("code", "")
+        inv.deliveryTypeCode = invoice_json.get("deliveryType", {}).get("code", "")
+        inv.deliveryCode = deliveryCode
+        inv.operationTypeCode = invoice_json.get("receiptType", {}).get("code", "")
+        inv.createdDate = invoice_json.get("createdDate", "")
+        inv.totalAmount = invoice_json.get("totalAmount", 0.0)
+        inv.statusCode = invoice_json.get("statusCode", "")
+        await inv.save()
+
+    await CatalogEntry.filter(invoice=inv).delete()
+
+    catalog_entries = invoice_json.get("catalogEntries", [])
+    for entry in catalog_entries:
+        await CatalogEntry.create(
+            invoice=inv,
+            catalogCode=entry.get("catalogCode", ""),
+            name=entry.get("name", ""),
+            unitCode=entry.get("unitCode", ""),
+            unitClassificationCode=entry.get("unitClassificationCode", ""),
+            quantity=entry.get("quantity", 0),
+            price=entry.get("price", 0.0),
+            taxRateVATCode=entry.get("taxRateVATCode", ""),
+            salesTaxCode=entry.get("salesTaxCode", "")
+        )
+
+    return inv
+
+async def save_all_invoices(data: dict):
+    invoices = data.get("invoices", [])
+    results = []
+    for inv_json in invoices:
+        inv = await save_invoice_with_entries(inv_json)
+        results.append(inv)
+    return results
+
+
+@app.get("/invoice/realization/{exchange_code}")
+async def fetch_invoice_from_gns(exchange_code: str):
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                List_Document_UUid,
+                params={"exchangeCode": exchange_code},
+                headers=HEADERS,
+                timeout=15.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            logging.info("GNS raw response:\n" + json.dumps(data, indent=2, ensure_ascii=False))
+            await save_all_invoices(data)
+            return {"msg": "Invoice sent to GNS and updated in DB", "gns_response": response.json()}
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Ошибка сети при запросе к ГНС: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Ошибка ответа от ГНС: {e.response.text}")
+
+
 @app.get("/invoices/list")
 async def get_all_invoices():
     async with httpx.AsyncClient() as client:
         url = List_Document
         try:
-            response = await client.get(
-                url,
-                headers=HEADERS,
-                timeout=15.0
-            )
+            response = await client.get(url, headers=HEADERS, timeout=15.0)
             response.raise_for_status()
-            return {"gns_invoices": response.json()}
+
+            data = response.json()
+
+            invoices = data.get("invoices", [])
+
+            for inv_json in invoices:
+                doc_uuid = inv_json.get("documentUuid", "")
+                if not doc_uuid:
+                    print("Документ без UUID, пропускаем:", inv_json)
+                    continue
+
+                existing = await Invoice.filter(documentUuid=doc_uuid).first()
+                if existing:
+                    print(f"Обновляем счет с UUID: {doc_uuid}")
+                    await existing.update_from_dict({
+                        "isBranchDataSent": inv_json.get("isBranchDataSent", False),
+                        "ownedCrmReceiptCode": inv_json.get("ownedCrmReceiptCode") or "",
+                        "contractorTin": inv_json.get("contractorTin") or "",
+                        "paymentCode": inv_json.get("paymentCode") or "",
+                        "taxRateVATCode": inv_json.get("taxRateVATCode") or "",
+                        "isResident": inv_json.get("isResident", False),
+                        "deliveryDate": inv_json.get("deliveryDate") or "",
+                        "currencyCode": inv_json.get("currencyCode") or "",
+                        "deliveryTypeCode": inv_json.get("deliveryTypeCode") or "",
+                        "deliveryCode": inv_json.get("deliveryCode") or "",
+                        "operationTypeCode": inv_json.get("operationTypeCode") or "",
+                        "createdDate": inv_json.get("createdDate") or "",
+                        "totalAmount": inv_json.get("totalAmount"),
+                        "statusCode": inv_json.get("statusCode") or "",
+                    })
+                    await existing.save()
+                else:
+                    print(f"Создаём новый счет с UUID: {doc_uuid}")
+                    await Invoice.create(
+                        documentUuid=inv_json.get("documentUuid") or "",
+                        isBranchDataSent=inv_json.get("isBranchDataSent", False),
+                        ownedCrmReceiptCode=inv_json.get("ownedCrmReceiptCode") or "",
+                        contractorTin=inv_json.get("contractorTin") or "",
+                        paymentCode=inv_json.get("paymentCode") or "",
+                        taxRateVATCode=inv_json.get("taxRateVATCode") or "",
+                        isResident=inv_json.get("isResident", False),
+                        deliveryDate=inv_json.get("deliveryDate") or "",
+                        currencyCode=inv_json.get("currencyCode") or "",
+                        deliveryTypeCode=inv_json.get("deliveryTypeCode") or "",
+                        deliveryCode=inv_json.get("deliveryCode") or "",
+                        operationTypeCode=inv_json.get("operationTypeCode") or "",
+                        createdDate=inv_json.get("createdDate") or "",
+                        totalAmount=inv_json.get("totalAmount"),  # если nullable, можно так оставить
+                        statusCode=inv_json.get("statusCode") or "",
+                    )
+
+            return {"gns_invoices": data}
+
         except httpx.HTTPStatusError as e:
             raise HTTPException(
                 status_code=500,
@@ -199,7 +317,6 @@ async def get_all_invoices():
                 status_code=500,
                 detail=f"Request to GNS failed: {str(e)}"
             )
-
 
 @app.put("/invoice/update/{documentUuid}")
 async def update_invoice(documentUuid: str, updated_data: InvoiceIn):
